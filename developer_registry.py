@@ -42,7 +42,7 @@ class DeveloperRegistry(object):
 
         self.teams[team].append(dev_id)
 
-    def find_developer_by_email(self, email: str) -> (DeveloperID, str):
+    def find_developer_by_email(self, email) -> (DeveloperID, str):
         for (team_name, team_members) in self.teams.items():
             for developer_id in team_members:
                 if developer_id.matches_email(email):
@@ -51,9 +51,12 @@ class DeveloperRegistry(object):
 
     def load_from_csv(self, filename):
         with open(filename) as csvfile:
-            csv_reader = csv.reader(delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
+            csv_reader = csv.reader(csvfile, delimiter=',', quotechar='"', quoting=csv.QUOTE_MINIMAL)
             for row in csv_reader:
-                print(row)
+                email_list = [row[0]]
+                if row[2]:
+                    email_list = email_list + row[2].split(',')
+                self.set_team_for_developer(DeveloperRegistry.DeveloperID(email_list), row[1])
 
 
 class TestDeveloperRegistry(unittest.TestCase):
