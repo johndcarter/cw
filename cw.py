@@ -2,6 +2,7 @@ import argparse
 
 from developer_registry import DeveloperRegistry
 from git import Repo
+from os import path
 import networkx as nx
 
 
@@ -83,7 +84,13 @@ def main(args):
             G.add_node(file_name)
             G.add_edge(team, file_name, label=count)
 
-        nx.drawing.nx_pydot.write_dot(G, f'{team}.dot')
+        dot_output_file = None
+        if not args.output:
+            dot_output_file = f'{team}.dot'
+        else:
+            dot_output_file = path.join(args.output, f'{team}.dot')
+
+        nx.drawing.nx_pydot.write_dot(G, dot_output_file)
 
 
 if __name__ == "__main__":
@@ -92,5 +99,6 @@ if __name__ == "__main__":
     parser.add_argument('pattern', type=str, help='String to match')
     parser.add_argument('since', type=str, help='Examine commits since this date, format: YYYY-MM-DD')
     parser.add_argument('team_csv', type=str, help='CSV file to read team data and email aliases from')
+    parser.add_argument('--output', type=str, help='Directory to write output to')
     args = parser.parse_args()
     main(args)
