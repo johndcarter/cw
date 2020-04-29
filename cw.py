@@ -1,12 +1,8 @@
 import argparse
-import csv
 
 from developer_registry import DeveloperRegistry
 from git import Repo
-from networkx import nx_pydot
 import networkx as nx
-from networkx.drawing.nx_pydot import write_dot
-import matplotlib.pyplot as plt
 
 
 def main(args):
@@ -24,68 +20,70 @@ def main(args):
     commits_sorted = sorted(repo.iter_commits(rev='develop', since=args.since), key=(lambda c: c.committed_datetime))
 
     change_count_for_file_by_author = {}
+    change_count_for_file_by_team = {}
     current = 1
 
     # 'indexing' happens here
     for commit in commits_sorted:
         print(f'Processing {current} of {len(commits_sorted)}')
         for file_name in commit.stats.files.keys():
+
             if args.pattern in file_name:
+                author_temp = str(commit.author.email.lower())
+
                 # get the dictionary of changes for the file, or init a new one
                 temp_dict = change_count_for_file_by_author.get(str(file_name), {})
 
                 # for the author of the commit, add or increment the change count in the temporary
-                temp_dict[str(commit.author.email).lower()] = temp_dict.get(str(commit.author.email).lower(), 0) + 1
+                temp_dict[author_temp] = temp_dict.get(author_temp, 0) + 1
 
                 # store the update
                 change_count_for_file_by_author[str(file_name)] = temp_dict
 
+                dev_tuple = developer_registry.find_developer_by_email(author_temp)
+
+                # we found the team for that developer
+                if dev_tuple:
+                    # get the dictionary of changes for that file, or init a new one
+                    temp_team_dict = change_count_for_file_by_team.get(file_name, {})
+
+                    # increment it
+                    temp_team_dict[dev_tuple[1]] = temp_team_dict.get(dev_tuple[1], 0) + 1
+
+                    # store the update
+                    change_count_for_file_by_team[file_name] = temp_team_dict
+
         current = current + 1
-
-    # sum up team changes
-    change_count_for_file_by_team = {}
-
-    for file_name, author_changes in change_count_for_file_by_author.items():
-        counts_by_team = {}
-        for who, count in author_changes.items():
-            dev_tuple = developer_registry.find_developer_by_email(who)
-
-            # if we found the author, add one to their change count for that team
-            if dev_tuple:
-                counts_by_team[dev_tuple[1]] = counts_by_team.get(dev_tuple[1], 0) + count
-        change_count_for_file_by_team[file_name] = counts_by_team
 
     print(f'Queried Range: {commits_sorted[0].committed_datetime} <-> {commits_sorted[-1].committed_datetime}')
 
     # reports
     # what are the most changed files by each team?
+    hot_list = {}
 
-    changes_by_team = {}
-    # for team in developer_registry.teams.keys():
-    #     ch
-    #     for file_name, change_count_by_team in change_count_for_file_by_team[team].items():
-
-
+    for team in developer_registry.teams.keys():
+        # uses a map to build a list of tuples: (filename, change_count), then sorts that by change count
+        hot_list[team] = sorted(list(map(lambda i: (i[0], i[1].get(team, 0)), change_count_for_file_by_team.items())),
+                                key=lambda e: e[1], reverse=True)
+        # drop any files that weren't changed by that team
+        hot_list[team] = list(filter(lambda i: i[1] > 0, hot_list[team]))
+        # limit graph to 25 or less files
+        if len(hot_list[team]) > 25:
+            hot_list[team] = hot_list[team][0:25]
 
     # write graph
-    G = nx.Graph()
+    for team in developer_registry.teams.keys():
+        G = nx.Graph()
 
-    # add nodes for all files
-    for file_name, _ in change_count_for_file_by_author.items():
-        G.add_node(file_name)
-    G.add_nodes_from(developer_registry.teams.keys())
+        # add nodes for team
+        G.add_node(team)
 
-    for file_name, team_change_dict in change_count_for_file_by_team.items():
-        for team_name, change_count in team_change_dict.items():
-            G.add_edge(team_name, file_name, label=change_count)
+        # add edges with labels
+        for file_name, count in hot_list[team]:
+            G.add_node(file_name)
+            G.add_edge(team, file_name, label=count)
 
-    # pos = nx.nx_pydot.graphviz_layout(G)
-    pos = nx.drawing.circular_layout(G)
-    nx.draw_networkx(G, pos)
-    labels = nx.get_edge_attributes(G, 'label')
-    nx.draw_networkx_edge_labels(G, pos, edge_labels=labels)
-    nx.drawing.nx_pydot.write_dot(G, 'test.dot')
-    print('Done')
+        nx.drawing.nx_pydot.write_dot(G, f'{team}.dot')
 
 
 if __name__ == "__main__":
