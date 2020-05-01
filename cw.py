@@ -3,7 +3,7 @@ import json
 
 from developer_registry import DeveloperRegistry
 from git import Repo
-from jira import JIRA
+from jira import JIRA, JIRAError
 from os import path
 import networkx as nx
 
@@ -129,7 +129,7 @@ def main(args):
     hot_files.sort(key=(lambda t: t[1]), reverse=True)
     hot_files = hot_files[0:25]
 
-    text_file = open('top25_activity.txt', 'w')
+    text_file = open('top25_activity_2020.txt', 'w')
     for file_name, commit_count in hot_files:
         text_file.write(f'\nFile: {file_name} has {commit_count} commits.')
 
@@ -169,7 +169,13 @@ def correlate_commits_with_jira(files_with_commits: dict, jira) -> dict:
             files_with_commits_detailed[file_name]['count'] += 1
 
             if ticket_number:
-                issue = jira.issue(ticket_number)
+                issue = None
+                try:  # this is a ham-handed way to handle any malformed ticket #s
+                    issue = jira.issue(ticket_number)
+                except JIRAError as e:
+                    print(f'Failed on find issue for: {ticket_number}')
+                    continue
+
                 ticket_type = issue.fields.issuetype.name
 
                 if ticket_type not in files_with_commits_detailed[file_name]:
