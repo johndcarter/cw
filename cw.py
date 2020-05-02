@@ -2,6 +2,7 @@ import argparse
 import json
 
 from developer_registry import DeveloperRegistry
+from execute_and_capture import *
 from git import Repo
 from jira import JIRA, JIRAError
 from os import path
@@ -78,7 +79,7 @@ def main(args):
             temp_list.append(commit)
             commits_matched_by_team[matched_commit_team] = temp_list
 
-        current = current + 1
+        current += 1
 
     print(f'Queried Range: {commits_sorted[0].committed_datetime} <-> {commits_sorted[-1].committed_datetime}')
 
@@ -125,16 +126,35 @@ def main(args):
     files_jira_types = correlate_commits_with_jira(files_with_commits, jira)
     print('Done correlation')
 
+    write_jira_activity(files_jira_types, files_with_commits, creds["browse_url_prefix"])
+
+    text_file = open('top25_modifications_2020.txt', 'w')
+    # this turns the map into a list of tuples filename -> [commit shas], sorted by the number of commits, top 25
+    for file_name, commit_list in sorted(files_with_commits.items(), key=(lambda t: len(t[1])), reverse=True)[0:25]:
+        text_file.write(f'\nFile: {file_name} had {len(commit_list)} commits:')
+        for commit in commit_list:
+            # omit merge commits:
+            if commit.summary.startswith('Merge'):
+                continue;
+            text_file.write(f'\n\t{commit.summary}')
+            text_file.write(f'\n\t{creds["browse_url_prefix"] + commit.hexsha}:')
+            inserts, deletes = get_insert_deletes_from_git_sha(args.path_to_repo, commit.hexsha)[file_name]
+            text_file.write(f'\n\t\tInsertions: {inserts} Deletions: {deletes}')
+
+    text_file.close()
+    # take top 25 of files_with_commits, and dump the interaction pattern
+
+
+
+def write_jira_activity(files_jira_types, files_with_commits, jira_issue_url_prefix):
     hot_files = list(map((lambda t: (t[0], len(t[1]))), files_with_commits.items()))
     hot_files.sort(key=(lambda t: t[1]), reverse=True)
     hot_files = hot_files[0:25]
-
-    text_file = open('top25_activity_2020.txt', 'w')
+    text_file = open('top25_jira_activity_2020.txt', 'w')
     for file_name, commit_count in hot_files:
         text_file.write(f'\nFile: {file_name} has {commit_count} commits.')
 
         for ticket_type, ticket_list in files_jira_types[file_name].items():
-
             if ticket_type == 'count':
                 continue;
 
@@ -142,11 +162,8 @@ def main(args):
             text_file.write(f'\n\t\tTickets: ')
 
             for ticket_number in ticket_list:
-                text_file.write(f'\n\t\t\t{creds["browse_url_prefix"] + ticket_number} ')
-
+                text_file.write(f'\n\t\t\t{jira_issue_url_prefix + ticket_number} ')
     text_file.close()
-
-    print(hot_files)
 
 
 def correlate_commits_with_jira(files_with_commits: dict, jira) -> dict:
@@ -182,11 +199,8 @@ def correlate_commits_with_jira(files_with_commits: dict, jira) -> dict:
                     files_with_commits_detailed[file_name][ticket_type] = []
 
                 files_with_commits_detailed[file_name][ticket_type].append(ticket_number)
-
             commit_count += 1
-
         file_count += 1
-
     return files_with_commits_detailed
 
 
