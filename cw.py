@@ -85,6 +85,74 @@ def main(args):
 
     # reports
     # what are the most changed files by each team?
+    hot_list = generate_hotlists_for_teams(change_count_for_file_by_team, developer_registry)
+
+    # write out hot list for each team
+    for team in hot_list.keys():
+        write_all_changes_for_team(team, hot_list[team], path.join(args.output, f'commits_by_file_for_{team}.txt'))
+
+    # build and write graph of team interactions
+    for team in hot_list.keys():
+        nx.drawing.nx_pydot.write_dot(build_graph(team, hot_list[team]), path.join(args.output, f'{team}.dot'))
+
+    print('Done')
+    write_jira_activity(correlate_commits_with_jira(files_with_commits, jira), files_with_commits,
+                        creds["browse_url_prefix"], path.join(args.output, 'top25_jira_activity.txt'))
+    print('Done correlation')
+
+    write_files_with_most_commits(creds, files_with_commits, path.join(args.output, 'top25_modifications.txt'))
+
+    # write change counts by author:
+    with open(path.join(args.output, 'who.txt'), 'w') as text_file:
+        text_file.write('Changes to public header files:')
+        for author, count in sorted(
+                get_change_counts_by_author(change_count_for_file_by_author, developer_registry).items(),
+                key=(lambda t: t[1]), reverse=True):
+            text_file.write(f'\n{author} -> {count} changes')
+
+
+def write_files_with_most_commits(creds, files_with_commits, output_filename):
+    with open(output_filename, 'w') as text_file:
+        # this turns the map into a list of tuples filename -> [commit shas], sorted by the number of commits, top 25
+        for file_name, commit_list in sorted(files_with_commits.items(), key=(lambda t: len(t[1])), reverse=True)[0:25]:
+            text_file.write(f'\nFile: {file_name} had {len(commit_list)} commits:')
+            for commit in commit_list:
+                # omit merge commits:
+                if commit.summary.startswith('Merge'):
+                    continue;
+                text_file.write(f'\n\t{commit.summary}')
+                text_file.write(f'\n\t{creds["browse_url_prefix"] + commit.hexsha}:')
+                inserts, deletes = get_insert_deletes_from_git_sha(args.path_to_repo, commit.hexsha)[file_name]
+                text_file.write(f'\n\t\tInsertions: {inserts} Deletions: {deletes}')
+
+
+def get_change_counts_by_author(change_count_for_file_by_author, developer_registry):
+    author_with_total_counts = {}
+    for _, dict_of_author_counts in change_count_for_file_by_author.items():
+        for author, commit_count in dict_of_author_counts.items():
+            found_tuple = developer_registry.find_developer_by_email(author)
+            if found_tuple:
+                developer_id, _ = found_tuple
+                if developer_id.name not in author_with_total_counts:
+                    author_with_total_counts[developer_id.name] = commit_count
+                else:
+                    author_with_total_counts[developer_id.name] += commit_count
+    return author_with_total_counts
+
+
+def build_graph(team_name, hot_list_for_team) -> nx.Graph:
+    graph = nx.Graph()
+    graph.add_node(team_name)
+
+    # add edges with labels
+    for file_name, count in hot_list_for_team:
+        graph.add_node(file_name)
+        graph.add_edge(team_name, file_name, label=count)
+
+    return graph
+
+
+def generate_hotlists_for_teams(change_count_for_file_by_team, developer_registry) -> dict:
     hot_list = {}
 
     for team in developer_registry.teams.keys():
@@ -94,63 +162,18 @@ def main(args):
         # drop any files that weren't changed by that team
         hot_list[team] = list(filter(lambda i: i[1] > 0, hot_list[team]))
 
-        write_all_changes_for_team(team, hot_list[team], len(commits_sorted),
-                                   len(commits_matched_by_team.get(team, [])),
-                                   args.output)
-
         # limit graph to 25 or less files
         if len(hot_list[team]) > 25:
             hot_list[team] = hot_list[team][0:25]
 
-    # write graph
-    for team in developer_registry.teams.keys():
-        G = nx.Graph()
-
-        # add nodes for team
-        G.add_node(team)
-
-        # add edges with labels
-        for file_name, count in hot_list[team]:
-            G.add_node(file_name)
-            G.add_edge(team, file_name, label=count)
-
-        dot_output_file = None
-        if not args.output:
-            dot_output_file = f'{team}.dot'
-        else:
-            dot_output_file = path.join(args.output, f'{team}.dot')
-
-        nx.drawing.nx_pydot.write_dot(G, dot_output_file)
-
-    print('Done')
-    files_jira_types = correlate_commits_with_jira(files_with_commits, jira)
-    print('Done correlation')
-
-    write_jira_activity(files_jira_types, files_with_commits, creds["browse_url_prefix"])
-
-    text_file = open('top25_modifications_2020.txt', 'w')
-    # this turns the map into a list of tuples filename -> [commit shas], sorted by the number of commits, top 25
-    for file_name, commit_list in sorted(files_with_commits.items(), key=(lambda t: len(t[1])), reverse=True)[0:25]:
-        text_file.write(f'\nFile: {file_name} had {len(commit_list)} commits:')
-        for commit in commit_list:
-            # omit merge commits:
-            if commit.summary.startswith('Merge'):
-                continue;
-            text_file.write(f'\n\t{commit.summary}')
-            text_file.write(f'\n\t{creds["browse_url_prefix"] + commit.hexsha}:')
-            inserts, deletes = get_insert_deletes_from_git_sha(args.path_to_repo, commit.hexsha)[file_name]
-            text_file.write(f'\n\t\tInsertions: {inserts} Deletions: {deletes}')
-
-    text_file.close()
-    # take top 25 of files_with_commits, and dump the interaction pattern
+    return hot_list
 
 
-
-def write_jira_activity(files_jira_types, files_with_commits, jira_issue_url_prefix):
+def write_jira_activity(files_jira_types, files_with_commits, jira_issue_url_prefix, output_filename):
     hot_files = list(map((lambda t: (t[0], len(t[1]))), files_with_commits.items()))
     hot_files.sort(key=(lambda t: t[1]), reverse=True)
     hot_files = hot_files[0:25]
-    text_file = open('top25_jira_activity_2020.txt', 'w')
+    text_file = open(output_filename, 'w')
     for file_name, commit_count in hot_files:
         text_file.write(f'\nFile: {file_name} has {commit_count} commits.')
 
@@ -212,22 +235,12 @@ def get_jira_ticket_number_from_summary(summary: str) -> str:
     return splits[0]
 
 
-def write_all_changes_for_team(team: str, hot_list: list, commit_count: int, commits_matched: int,
-                               outfile_name: str = None) -> None:
-    output_file = None
-    if not outfile_name:
-        output_file = f'commits_by_file_for_{team}.txt'
-    else:
-        output_file = path.join(args.output, f'commits_by_file_for_{team}.txt')
+def write_all_changes_for_team(team: str, hot_list: list, outfile_name: str = None) -> None:
+    with open(outfile_name, 'w') as text_file:
+        text_file.write(f'{team} team changed {len(hot_list)} files: ')
 
-    text_file = open(output_file, 'w')
-    text_file.write(
-        f'{team} team made {len(hot_list)} changes (over {commits_matched} commits) in {commit_count} commits scanned.')
-
-    for t in hot_list:
-        text_file.write(f'\n{t[0]}, {t[1]} changes.')
-
-    text_file.close()
+        for t in hot_list:
+            text_file.write(f'\n{t[0]}, {t[1]} changes.')
 
 
 if __name__ == "__main__":
